@@ -94,7 +94,7 @@ dependencies {
     implementation project(':brouter-core')
     implementation project(':brouter-expressions')
     implementation project(':brouter-util')
-    implementation 'androidx.preference:preference:1.2.0'
+    implementation 'androidx.preference:preference:1.2.1'
 
     testImplementation 'junit:junit:4.13.2'
 
