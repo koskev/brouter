@@ -78,5 +78,5 @@ dependencies {
     implementation project(':brouter-util')
 
     testImplementation 'junit:junit:4.13.2'
-    testImplementation 'org.json:json:20180813'
+    testImplementation 'org.json:json:20240303'
 }
