@@ -23,8 +23,8 @@ import btools.util.CompactLongMap;
 import btools.util.FrozenLongMap;
 
 public final class OsmTrack {
-  final public static String version = "1.7.3";
-  final public static String versionDate = "19082023";
+  final public static String version = "1.7.4";
+  final public static String versionDate = "09042024";
 
   // csv-header-line
   private static final String MESSAGES_HEADER = "Longitude\tLatitude\tElevation\tDistance\tCostPerKm\tElevCost\tTurnCost\tNodeCost\tInitialCost\tWayTags\tNodeTags\tTime\tEnergy";
@@ -166,7 +166,7 @@ public final class OsmTrack {
   }
 
   public List<String> aggregateMessages() {
-    ArrayList<String> res = new ArrayList<>();
+    List<String> res = new ArrayList<>();
     MessageData current = null;
     for (OsmPathElement n : nodes) {
       if (n.message != null && n.message.wayKeyValues != null) {
@@ -188,7 +188,7 @@ public final class OsmTrack {
   }
 
   public List<String> aggregateSpeedProfile() {
-    ArrayList<String> res = new ArrayList<>();
+    List<String> res = new ArrayList<>();
     int vmax = -1;
     int vmaxe = -1;
     int vmin = -1;
@@ -285,7 +285,6 @@ public final class OsmTrack {
           }
           dis.close();
         } catch (Exception e) {
-          t = null;
           if (debugInfo != null) {
             debugInfo.append("Error reading rawTrack: " + e);
           }

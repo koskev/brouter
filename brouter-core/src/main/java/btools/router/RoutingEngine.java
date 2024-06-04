@@ -20,8 +20,7 @@ import btools.mapaccess.OsmLink;
 import btools.mapaccess.OsmLinkHolder;
 import btools.mapaccess.OsmNode;
 import btools.mapaccess.OsmNodePairSet;
-import btools.util.CheapAngleMeter;
-import btools.util.CheapRuler;
+import btools.mapaccess.OsmPos;
 import btools.util.CompactLongMap;
 import btools.util.SortedHeap;
 import btools.util.StackSampler;
@@ -31,8 +30,6 @@ public class RoutingEngine extends Thread {
   public final static int BROUTER_ENGINEMODE_ROUTING = 0;
   public final static int BROUTER_ENGINEMODE_SEED = 1;
   public final static int BROUTER_ENGINEMODE_GETELEV = 2;
-
-  public final static int BROUTER_ENGINEMODE_PREPARE_REROUTE = 6;
 
   private NodesCache nodesCache;
   private SortedHeap<OsmPath> openSet = new SortedHeap<>();
@@ -162,7 +159,6 @@ public class RoutingEngine extends Thread {
 
     switch (engineMode) {
       case BROUTER_ENGINEMODE_ROUTING:
-      case BROUTER_ENGINEMODE_PREPARE_REROUTE:
         if (waypoints.size() < 2) {
           throw new IllegalArgumentException("we need two lat/lon points at least!");
         }
@@ -191,12 +187,9 @@ public class RoutingEngine extends Thread {
       OsmTrack[] refTracks = new OsmTrack[nsections]; // used ways for alternatives
       OsmTrack[] lastTracks = new OsmTrack[nsections];
       OsmTrack track = null;
-      ArrayList<String> messageList = new ArrayList<>();
+      List<String> messageList = new ArrayList<>();
       for (int i = 0; ; i++) {
         track = findTrack(refTracks, lastTracks);
-
-        if (engineMode==BROUTER_ENGINEMODE_PREPARE_REROUTE) break; // no output for rerouting prepare
-
         track.message = "track-length = " + track.distance + " filtered ascend = " + track.ascend
           + " plain-ascend = " + track.plainAscend + " cost=" + track.cost;
         if (track.energy != 0) {
@@ -583,10 +576,6 @@ public class RoutingEngine extends Thread {
         boolean dirty = found && nearbyTrack.isDirty;
         logInfo("read referenceTrack, found=" + found + " dirty=" + dirty + " " + debugInfo);
       }
-      if (nearbyTrack != null &&
-          engineMode==BROUTER_ENGINEMODE_PREPARE_REROUTE) {
-        return null; // already rerouting prepared
-      }
     }
 
     if (matchedWaypoints == null) { // could exist from the previous alternative level
@@ -599,22 +588,6 @@ public class RoutingEngine extends Thread {
         matchedWaypoints.add(mwp);
       }
       matchWaypointsToNodes(matchedWaypoints);
-      if (routingContext.startDirection != null) {
-        // add a nogo not to turn back
-        double angle = CheapAngleMeter.normalize(180 + routingContext.startDirection);
-        int[] np = CheapRuler.destination(matchedWaypoints.get(0).crosspoint.ilon, matchedWaypoints.get(0).crosspoint.ilat, 10, angle);
-        OsmNodeNamed n = new OsmNodeNamed();
-        n.name = "nogo8";
-        n.ilon = np[0];
-        n.ilat = np[1];
-        n.isNogo = true;
-        n.radius = 8;
-        n.nogoWeight = 9999;
-        if (routingContext.nogopoints == null) {
-          routingContext.nogopoints = new ArrayList<>();
-        }
-        routingContext.nogopoints.add(n);
-      }
 
       routingContext.checkMatchedWaypointAgainstNogos(matchedWaypoints);
 
@@ -659,8 +632,7 @@ public class RoutingEngine extends Thread {
         routingContext.inverseDirection = false;
         wptIndex = i + 1;
       } else {
-        //seg = searchTrack(matchedWaypoints.get(i), matchedWaypoints.get(i + 1), i == matchedWaypoints.size() - 2 ? nearbyTrack : null, refTracks[i]);
-        seg = searchTrack(matchedWaypoints.get(i), matchedWaypoints.get(i + 1), nearbyTrack, refTracks[i]);
+        seg = searchTrack(matchedWaypoints.get(i), matchedWaypoints.get(i + 1), i == matchedWaypoints.size() - 2 ? nearbyTrack : null, refTracks[i]);
         wptIndex = i;
       }
       if (seg == null)
@@ -718,9 +690,9 @@ public class RoutingEngine extends Thread {
             return false;
         }
       }
-      ArrayList<OsmPathElement> removeBackList = new ArrayList<>();
-      ArrayList<OsmPathElement> removeForeList = new ArrayList<>();
-      ArrayList<Integer> removeVoiceHintList = new ArrayList<>();
+      List<OsmPathElement> removeBackList = new ArrayList<>();
+      List<OsmPathElement> removeForeList = new ArrayList<>();
+      List<Integer> removeVoiceHintList = new ArrayList<>();
       OsmPathElement last = null;
       OsmPathElement lastJunction = null;
       CompactLongMap<OsmTrack.OsmPathElementHolder> lastJunctions = new CompactLongMap<>();
@@ -936,11 +908,12 @@ public class RoutingEngine extends Thread {
         if (ele_last != Short.MIN_VALUE) {
           ehb = ehb + (ele_last - ele) * eleFactor;
         }
+        double filter = elevationFilter(n);
         if (ehb > 0) {
           ascend += ehb;
           ehb = 0;
-        } else if (ehb < -10) {
-          ehb = -10;
+        } else if (ehb < filter) {
+          ehb = filter;
         }
       }
 
@@ -975,6 +948,21 @@ public class RoutingEngine extends Thread {
 
     logInfo("track-length total = " + t.distance);
     logInfo("filtered ascend = " + t.ascend);
+  }
+
+  /**
+   * find the elevation type for position
+   * to determine the filter value
+   *
+   * @param n  the point
+   * @return  the filter value for 1sec / 3sec elevation source
+   */
+  double elevationFilter(OsmPos n) {
+    if (nodesCache != null) {
+      int r = nodesCache.getElevationType(n.getILon(), n.getILat());
+      if (r == 1) return -5.;
+    }
+    return -10.;
   }
 
   // geometric position matching finding the nearest routable way-section
@@ -1077,18 +1065,7 @@ public class RoutingEngine extends Thread {
       track.nogoChecksums = routingContext.getNogoChecksums();
       track.profileTimestamp = routingContext.profileTimestamp;
       track.isDirty = isDirty;
-      if (foundRawTrack == null) {
-        foundRawTrack = track;
-      } else {
-        for (OsmPathElement n : track.nodes) {
-          foundRawTrack.nodes.add(n);
-        }
-        foundRawTrack.endPoint = endWp;
-      }
-      if (engineMode==BROUTER_ENGINEMODE_PREPARE_REROUTE) {
-        return null; // rerouting prepared
-      }
-
+      foundRawTrack = track;
     }
 
     if (!wasClean && isDirty) {
@@ -1269,7 +1246,7 @@ public class RoutingEngine extends Thread {
       addToOpenset(startPath1);
       addToOpenset(startPath2);
     }
-    ArrayList<OsmPath> openBorderList = new ArrayList<>(4096);
+    List<OsmPath> openBorderList = new ArrayList<>(4096);
     boolean memoryPanicMode = false;
     boolean needNonPanicProcessing = false;
 
@@ -1302,7 +1279,6 @@ public class RoutingEngine extends Thread {
         }
 
         if (path.airdistance == -1) {
-          path.unregisterUpTree(routingContext);
           continue;
         }
 
@@ -1370,7 +1346,6 @@ public class RoutingEngine extends Thread {
         OsmNode currentNode = path.getTargetNode();
 
         if (currentLink.isLinkUnused()) {
-          path.unregisterUpTree(routingContext);
           continue;
         }
 
@@ -1413,7 +1388,7 @@ public class RoutingEngine extends Thread {
                 + path.elevationCorrection()
                 + (costCuttingTrack.cost - pe.cost);
               if (costEstimate <= maxTotalCost) {
-                matchPath = OsmPathElement.create(path, routingContext.countTraffic);
+                matchPath = OsmPathElement.create(path);
               }
               if (costEstimate < maxTotalCost) {
                 logInfo("maxcost " + maxTotalCost + " -> " + costEstimate);
@@ -1423,7 +1398,6 @@ public class RoutingEngine extends Thread {
           }
         }
 
-        int keepPathAirdistance = path.airdistance;
         OsmLinkHolder firstLinkHolder = currentLink.getFirstLinkHolder(sourceNode);
         for (OsmLinkHolder linkHolder = firstLinkHolder; linkHolder != null; linkHolder = linkHolder.getNextForLink()) {
           ((OsmPath) linkHolder).airdistance = -1; // invalidate the entry in the open set;
@@ -1442,7 +1416,6 @@ public class RoutingEngine extends Thread {
         // recheck cutoff before doing expensive stuff
         int addDiff = 100;
         if (path.cost + path.airdistance > maxTotalCost + addDiff) {
-          path.unregisterUpTree(routingContext);
           continue;
         }
 
@@ -1497,7 +1470,7 @@ public class RoutingEngine extends Thread {
               if (routingContext.turnInstructionMode > 0) {
                 OsmPath detour = routingContext.createPath(path, link, refTrack, true);
                 if (detour.cost >= 0. && nextId != startNodeId1 && nextId != startNodeId2) {
-                  guideTrack.registerDetourForId(currentNode.getIdFromPos(), OsmPathElement.create(detour, false));
+                  guideTrack.registerDetourForId(currentNode.getIdFromPos(), OsmPathElement.create(detour));
                 }
               }
               continue;
@@ -1533,16 +1506,14 @@ public class RoutingEngine extends Thread {
             }
           }
           if (bestPath != null) {
-            boolean trafficSim = endPos == null;
-
-            bestPath.airdistance = trafficSim ? keepPathAirdistance : (isFinalLink ? 0 : nextNode.calcDistance(endPos));
+            bestPath.airdistance = isFinalLink ? 0 : nextNode.calcDistance(endPos);
 
             boolean inRadius = boundary == null || boundary.isInBoundary(nextNode, bestPath.cost);
 
             if (inRadius && (isFinalLink || bestPath.cost + bestPath.airdistance <= (lastAirDistanceCostFactor != 0. ? maxTotalCost * lastAirDistanceCostFactor : maxTotalCost) + addDiff)) {
               // add only if this may beat an existing path for that link
               OsmLinkHolder dominator = link.getFirstLinkHolder(currentNode);
-              while (!trafficSim && dominator != null) {
+              while (dominator != null) {
                 OsmPath dp = (OsmPath) dominator;
                 if (dp.airdistance != -1 && bestPath.definitlyWorseThan(dp)) {
                   break;
@@ -1551,9 +1522,6 @@ public class RoutingEngine extends Thread {
               }
 
               if (dominator == null) {
-                if (trafficSim && boundary != null && path.cost == 0 && bestPath.cost > 0) {
-                  bestPath.airdistance += boundary.getBoundaryDistance(nextNode);
-                }
                 bestPath.treedepth = path.treedepth + 1;
                 link.addLinkHolder(bestPath, currentNode);
                 addToOpenset(bestPath);
@@ -1561,8 +1529,6 @@ public class RoutingEngine extends Thread {
             }
           }
         }
-
-        path.unregisterUpTree(routingContext);
       }
     }
 
@@ -1576,12 +1542,11 @@ public class RoutingEngine extends Thread {
   private void addToOpenset(OsmPath path) {
     if (path.cost >= 0) {
       openSet.add(path.cost + (int) (path.airdistance * airDistanceCostFactor), path);
-      path.registerUpTree();
     }
   }
 
   private OsmTrack compileTrack(OsmPath path, boolean verbose) {
-    OsmPathElement element = OsmPathElement.create(path, false);
+    OsmPathElement element = OsmPathElement.create(path);
 
     // for final track, cut endnode
     if (guideTrack != null && element.origin != null) {
